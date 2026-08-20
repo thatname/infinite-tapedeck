@@ -342,7 +342,13 @@
   /* capture = dubbing section */
   #deck-line { font-size: .66rem; color: var(--cyan); letter-spacing: .08em;
     margin-top: .5rem; text-shadow: 0 0 6px #00e5ff50; opacity: .9;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    display: flex; align-items: center; gap: .4rem; }
+  #deck-line .deck-text { overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1 1 auto; }
+  #gen-toggle { padding: .18rem .55rem; font-size: .72rem; border-radius: 7px;
+    flex: 0 0 auto; }
+  #gen-toggle.armed { color: var(--red); border-color: #7a2830;
+    text-shadow: 0 0 7px var(--red); }
   #cap-state { font-size: .68rem; color: var(--dim); margin-bottom: .35rem;
                letter-spacing: .08em; text-transform: uppercase; }
   #cap-state.running { color: var(--red); text-shadow: 0 0 7px var(--red); }
@@ -530,7 +536,7 @@
           <input type="range" id="ln-slider" min="45" max="300" step="15" value="45" title="How long to aim for. Leftmost lets each vein use the length of its own source tracks, which is usually the right answer. The model often ends early regardless, so treat this as an aim rather than a guarantee.">
           <div id="sp-ends"><span>shorter</span><span>longer →</span></div>
         </div>
-        <div id="deck-line">DECK · <span id="deck-msg">listening for the daemon…</span></div>
+        <div id="deck-line"><span class="deck-text">DECK · <span id="deck-msg">listening for the daemon…</span></span><button id="gen-toggle" title="pause generation — finishes current take, then holds">⏸</button></div>
       </div>
 
       <div class="rail-sec">
@@ -1030,6 +1036,7 @@ $("sl-capture").onclick = async () => {
 
 let dubState = "idle";
 let cardOwner = "idle";
+let genPaused = false;
 $("dub-toggle").onclick = async () => {
   if (dubState === "running") {
     const j = await (await fetch("/music_studio/import/pause",
@@ -1041,6 +1048,19 @@ $("dub-toggle").onclick = async () => {
     toast(j.ok ? "dubbing resumed where it left off" : (j.error || "cannot resume"));
   }
   pollCapture();
+};
+
+$("gen-toggle").onclick = async () => {
+  if (genPaused) {
+    const j = await (await fetch("/music_studio/generation/resume",
+                                 { method: "POST" })).json();
+    toast(j.ok ? "generation resumed" : (j.error || "cannot resume"));
+  } else {
+    const j = await (await fetch("/music_studio/generation/pause",
+                                 { method: "POST" })).json();
+    toast(j.ok ? "generation paused — finishes current take, then holds" : "already paused");
+  }
+  pollGpu();
 };
 
 async function pollCapture() {
@@ -1237,6 +1257,15 @@ async function pollGpu() {
     if ($("title").textContent.startsWith("SYNTHESIZING"))
       $("stats").textContent =
         ((OWNER[d.owner] || "") + " — " + (d.msg || "") + age).toUpperCase();
+    genPaused = !!d.gen_paused;
+    const gt = $("gen-toggle");
+    if (genPaused) {
+      gt.textContent = "⏵"; gt.classList.add("armed");
+      gt.title = "resume generation";
+    } else {
+      gt.textContent = "⏸"; gt.classList.remove("armed");
+      gt.title = "pause generation — finishes current take, then holds";
+    }
   } catch (e) { /* server restarting */ }
 }
 

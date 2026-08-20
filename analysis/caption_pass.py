@@ -52,6 +52,13 @@ try:
 except (OSError, ValueError):
     pass
 
+# Split mode: captioner runs on its own GPU, separate from the generator.
+# Skips all VRAM coordination (PAUSE flag, queue drain, /free, WANT_CARD)
+# since there is no contention for the card.
+SPLIT_MODE = bool(_cfg.get("split_mode", False))
+if SPLIT_MODE:
+    YIELD_BELOW_S = 0
+
 # VRAM this pass must leave on the card, always.
 #
 # Flamingo will happily grow into the last byte of a 16 GB card, and then
@@ -327,29 +334,46 @@ def main():
         todo = [t for t in todo if t not in poison]
         print(f"skipping {skipped} poison track(s)", flush=True)
 
-    with open(PAUSE_FLAG, "w") as f:
-        f.write(str(os.getpid()))  # lets guards distinguish live vs stale
+    if not SPLIT_MODE:
+        with open(PAUSE_FLAG, "w") as f:
+            f.write(str(os.getpid()))  # lets guards distinguish live vs stale
     try:
-        print("PAUSE raised; waiting for tank generation to drain", flush=True)
-        while queue_busy():
-            time.sleep(15)
-        free = free_the_card()
-        clip_s = clip_seconds(free)
-        if clip_s < MAX_INPUT_S:
-            print(f"{free} MB free — describing {clip_s}s of each long track "
-                  f"instead of {MAX_INPUT_S}s, to stay inside the card. "
-                  "Pin with caption_max_input_s if you would rather not.",
-                  flush=True)
-        if free is not None:
-            print(f"{free} MB VRAM free after unloading the generator",
-                  flush=True)
-            if free < FLAMINGO_VRAM_MB:
-                print(f"NOT ENOUGH VRAM: Music Flamingo needs about "
-                      f"{FLAMINGO_VRAM_MB} MB and only {free} MB is free. "
-                      "Something else is holding the card (a game, another "
-                      "model, a second ComfyUI). Free it and re-run — the "
-                      "pass resumes where it stopped.", flush=True)
-                sys.exit(1)
+        if SPLIT_MODE:
+            free = free_vram_mb()
+            clip_s = clip_seconds(free)
+            if clip_s < MAX_INPUT_S:
+                print(f"{free} MB free — describing {clip_s}s of each long track "
+                      f"instead of {MAX_INPUT_S}s, to stay inside the card. "
+                      "Pin with caption_max_input_s if you would rather not.",
+                      flush=True)
+            if free is not None:
+                print(f"{free} MB VRAM free", flush=True)
+                if free < FLAMINGO_VRAM_MB:
+                    print(f"NOT ENOUGH VRAM: Music Flamingo needs about "
+                          f"{FLAMINGO_VRAM_MB} MB and only {free} MB is free.",
+                          flush=True)
+                    sys.exit(1)
+        else:
+            print("PAUSE raised; waiting for tank generation to drain", flush=True)
+            while queue_busy():
+                time.sleep(15)
+            free = free_the_card()
+            clip_s = clip_seconds(free)
+            if clip_s < MAX_INPUT_S:
+                print(f"{free} MB free — describing {clip_s}s of each long track "
+                      f"instead of {MAX_INPUT_S}s, to stay inside the card. "
+                      "Pin with caption_max_input_s if you would rather not.",
+                      flush=True)
+            if free is not None:
+                print(f"{free} MB VRAM free after unloading the generator",
+                      flush=True)
+                if free < FLAMINGO_VRAM_MB:
+                    print(f"NOT ENOUGH VRAM: Music Flamingo needs about "
+                          f"{FLAMINGO_VRAM_MB} MB and only {free} MB is free. "
+                          "Something else is holding the card (a game, another "
+                          "model, a second ComfyUI). Free it and re-run — the "
+                          "pass resumes where it stopped.", flush=True)
+                    sys.exit(1)
 
         import logging
 
@@ -403,7 +427,8 @@ def main():
             # waiting for one to appear by luck left the deck down for the
             # rest of a 33-minute dub. So it asks (systemd/wait-for-vram.sh
             # sets the flag) and we answer at the next track boundary.
-            if os.path.exists(WANT_CARD):
+            # Skip in split mode — no other process shares this card.
+            if not SPLIT_MODE and os.path.exists(WANT_CARD):
                 torch.cuda.empty_cache()
                 print(f"WANT_CARD — released cache, free VRAM now "
                       f"{free_vram_mb()} MB", flush=True)
@@ -505,11 +530,12 @@ def main():
         wrote = sum(1 for _ in open(OUT)) if os.path.exists(OUT) else 0
         print(f"RESULT {wrote} track(s) described by ear", flush=True)
     finally:
-        try:
-            os.unlink(PAUSE_FLAG)
-            print("PAUSE lowered", flush=True)
-        except FileNotFoundError:
-            pass
+        if not SPLIT_MODE:
+            try:
+                os.unlink(PAUSE_FLAG)
+                print("PAUSE lowered", flush=True)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

@@ -481,6 +481,18 @@ async def deckstate(request):
     owner, mem = _card_owner()
     st["owner"] = owner
     st["owner_mem"] = mem
+    # Report whether generation is manually paused so the deck UI can show
+    # the correct toggle state. A PID-bearing PAUSE (captioner) does not
+    # count — that's the captioner's lifecycle, not a user action.
+    pause_file = f"{BASE}/radio/PAUSE"
+    gen_paused = False
+    if os.path.exists(pause_file):
+        try:
+            content = open(pause_file).read().strip()
+            gen_paused = not content.isdigit()
+        except OSError:
+            gen_paused = True
+    st["gen_paused"] = gen_paused
     return web.json_response(st)
 
 
@@ -1126,6 +1138,39 @@ async def import_cancel(request):
         return web.json_response({"ok": True})
     except OSError as e:
         return web.json_response({"error": repr(e)[:80]}, status=500)
+
+
+@PromptServer.instance.routes.post("/music_studio/generation/pause")
+async def generation_pause(request):
+    """Pause the tank daemon by creating a manual PAUSE flag. The daemon's
+    hold_reason() sees a non-numeric file and treats it as a manual hold —
+    it finishes the current generation, then holds until the flag is removed."""
+    pause_file = f"{BASE}/radio/PAUSE"
+    if os.path.exists(pause_file):
+        return web.json_response({"ok": True, "already_paused": True})
+    with open(pause_file, "w") as f:
+        f.write("manual\n")
+    return web.json_response({"ok": True})
+
+
+@PromptServer.instance.routes.post("/music_studio/generation/resume")
+async def generation_resume(request):
+    """Remove the manual PAUSE flag so the tank daemon resumes generating."""
+    pause_file = f"{BASE}/radio/PAUSE"
+    try:
+        with open(pause_file) as f:
+            content = f.read().strip()
+        # Only remove manual holds; a captioner's PID-bearing PAUSE is its
+        # own lifecycle and must not be pulled out from under it.
+        if content.isdigit():
+            return web.json_response({"ok": False,
+                                      "error": "PAUSE held by captioner — "
+                                      "use the dubbing pause instead"},
+                                     status=409)
+        os.unlink(pause_file)
+    except FileNotFoundError:
+        return web.json_response({"ok": True, "already_resumed": True})
+    return web.json_response({"ok": True})
 
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

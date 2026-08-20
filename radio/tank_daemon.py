@@ -51,6 +51,10 @@ LLM_URL = (_cfg["llm_base"] or "").rstrip("/") or None
 LLM_MODEL = _cfg["llm_model"]
 CAPTION_BATCH = int(_cfg.get("caption_batch", 10))
 BUNDLE_QUEUE_TARGET = int(_cfg.get("bundle_queue_target", 20))  # pre-written bundles to keep banked on disk
+# Split mode: captioner runs on a separate node with its own GPU.
+# Skip foreign_vram_mb() (which needs /proc and systemctl) and any
+# captioner-coordination logic — the PAUSE flag still works for manual pause.
+SPLIT_MODE = bool(_cfg.get("split_mode", False))
 STARVED_BELOW = 4             # spool depth under which a long residency hurts
 BUNDLE_FILE = f"{BASE}/radio/bundles.jsonl"
 MIN_TAKE_S = int(_cfg.get("min_take_s", 45))  # cull true stubs; length ambition lives in captions
@@ -338,7 +342,7 @@ def hold_reason():
             return f"sibling busy: {sib}"
     if queue_busy(M3) is None:
         return "music3 server down"
-    if foreign_vram_mb() > FOREIGN_VRAM_MB:
+    if not SPLIT_MODE and foreign_vram_mb() > FOREIGN_VRAM_MB:
         return f"foreign VRAM > {FOREIGN_VRAM_MB} MB (game?)"
     return None
 
